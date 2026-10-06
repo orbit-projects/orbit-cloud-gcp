@@ -13,7 +13,7 @@ license-files = ["LICENSE"]
 dependencies = [
   "google-api-core>=2.24,<3",
   "google-cloud-asset>=4.4,<5",
-  "protobuf>=5,<7",
+  "protobuf>=5,<8",
   "orbit-cloud>=0.2.0a1,<0.3",
 ]
 classifiers = [
