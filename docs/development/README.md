@@ -12,3 +12,12 @@ python -m build
 ```
 
 Provider tests use fake SDK clients and do not require cloud credentials. Live inventory checks must be separately opted in and run against a dedicated non-production account/project/subscription.
+
+Strict mypy checks the adapter code. The Google API Core and Cloud SDK distributions currently do
+not provide complete PEP 561 typing metadata, so the configuration narrowly ignores missing import
+metadata for those SDK namespaces; it does not disable checking for Orbit modules or this package.
+
+The current local quality matrix passes on CPython 3.11, 3.12, 3.13, and 3.14: all 5 tests, Ruff
+lint and format checks, strict mypy, and wheel/sdist builds pass on each interpreter. These checks
+use a fake Cloud Asset Inventory client; they do not verify IAM permissions, API availability, or
+hosted CI.

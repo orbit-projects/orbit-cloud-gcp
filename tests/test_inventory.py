@@ -13,12 +13,15 @@
 # limitations under the License.
 """Google Cloud query translation, safe errors, and resource lifecycle tests."""
 
+from __future__ import annotations
+
 import asyncio
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from google.api_core.exceptions import PermissionDenied, ResourceExhausted
+from google.api_core.retry_async import if_transient_error
 from orbit_cloud import CloudInventoryQuery, CloudOperationError
 
 from orbit_cloud_gcp import GCPCloudInventory
@@ -52,6 +55,7 @@ class FakeClient:
         )
         self.failure: Exception | None = None
         self.closed = False
+        self.entered = 0
 
     async def search_all_resources(self, **kwargs: Any) -> FakePager:
         self.request = kwargs
@@ -59,7 +63,11 @@ class FakeClient:
             raise self.failure
         return FakePager(self.response)
 
-    async def close(self) -> None:
+    async def __aenter__(self) -> FakeClient:
+        self.entered += 1
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
         self.closed = True
 
 
@@ -89,8 +97,37 @@ async def test_inventory_maps_query_and_returns_bounded_resource_page() -> None:
     assert page.resources[0].name == "web"
     assert page.next_page_token == "opaque-google-token"
     assert "opaque-google-token" not in repr(page)
+    assert client.entered == 1
     await provider.aclose()
     assert client.closed
+
+
+@pytest.mark.asyncio
+async def test_retry_policy_is_explicitly_jittered_and_request_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pass bounded standard Google retry parameters to the generated async client."""
+
+    class RetryPolicySpy:
+        """Capture retry configuration without sleeping or calling Google Cloud."""
+
+        def __init__(self, **kwargs: object) -> None:
+            self.options = kwargs
+
+    monkeypatch.setattr("orbit_cloud_gcp.inventory.AsyncRetry", RetryPolicySpy)
+    client = FakeClient()
+    provider = GCPCloudInventory(client_factory=lambda: client)
+
+    await provider.list_resources(CloudInventoryQuery(scope="organizations/123"))
+
+    assert client.request["retry"].options == {
+        "predicate": if_transient_error,
+        "initial": 1.0,
+        "maximum": 60.0,
+        "multiplier": 2.0,
+        "timeout": 30.0,
+    }
+    await provider.aclose()
 
 
 @pytest.mark.asyncio
@@ -150,3 +187,31 @@ async def test_cancel_propagates_and_close_is_idempotent() -> None:
     await provider.aclose()
     await provider.aclose()
     assert client.closed
+
+
+@pytest.mark.asyncio
+async def test_failed_client_close_retains_context_for_retry() -> None:
+    """A failed async client exit remains available for retry and blocks further requests."""
+
+    class FailOnceClient(FakeClient):
+        close_calls = 0
+
+        async def __aexit__(self, *args: object) -> None:
+            self.close_calls += 1
+            if self.close_calls == 1:
+                raise RuntimeError("temporary SDK close failure")
+            await super().__aexit__(*args)
+
+    client = FailOnceClient()
+    provider = GCPCloudInventory(client_factory=lambda: client)
+    await provider.list_resources(CloudInventoryQuery(scope="projects/demo"))
+
+    with pytest.raises(CloudOperationError, match="could not be closed"):
+        await provider.aclose()
+    with pytest.raises(CloudOperationError, match="closed"):
+        await provider.list_resources(CloudInventoryQuery(scope="projects/demo"))
+
+    await provider.aclose()
+    await provider.aclose()
+    assert client.closed
+    assert client.close_calls == 2

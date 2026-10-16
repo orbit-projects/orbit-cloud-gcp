@@ -19,10 +19,10 @@ import asyncio
 import re
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from google.api_core import exceptions as google_errors
-from google.api_core.retry_async import AsyncRetry
+from google.api_core.retry_async import AsyncRetry, if_transient_error
 from google.cloud import asset_v1
 from google.protobuf.field_mask_pb2 import FieldMask
 from orbit_cloud import (
@@ -42,39 +42,61 @@ class _AssetClient(Protocol):
     async def search_all_resources(self, **kwargs: Any) -> Any:
         """Search Cloud Asset Inventory with a bounded query request."""
 
-    async def close(self) -> None:
-        """Close the asynchronous Cloud Asset Inventory client."""
+
+class _ClientContext(Protocol):
+    async def __aenter__(self) -> _AssetClient:
+        """Enter the SDK async context and return its client."""
+
+    async def __aexit__(self, *args: object) -> None:
+        """Close the SDK transport through its supported async context lifecycle."""
 
 
 class GCPCloudInventory:
-    """List Google Cloud resources through Cloud Asset Inventory search."""
+    """List resources in an explicit Google Cloud project, folder, or organization scope.
+
+    The async client is created on the first request, shared across bounded concurrent searches,
+    and closed after active searches drain when ``aclose()`` is called. Credentials are resolved
+    through Application Default Credentials.
+    """
 
     def __init__(
         self,
         config: GCPCloudInventoryConfig | None = None,
         *,
-        client_factory: Callable[[], _AssetClient] | None = None,
+        client_factory: Callable[[], _ClientContext] | None = None,
     ) -> None:
         self.config = config or GCPCloudInventoryConfig()
-        self._client_factory = client_factory or asset_v1.AssetServiceAsyncClient
+        self._client_factory: Callable[[], _ClientContext] = (
+            client_factory or self._default_client_factory
+        )
         self._client: _AssetClient | None = None
+        self._client_context: _ClientContext | None = None
         self._client_lock = asyncio.Lock()
         self._condition = asyncio.Condition()
         self._semaphore = asyncio.Semaphore(self.config.max_concurrency)
         self._active = 0
         self._closing = False
+        self._close_failed = False
         self._closed = False
+
+    @staticmethod
+    def _default_client_factory() -> _ClientContext:
+        """Create an async GAPIC client using Application Default Credentials."""
+        return cast(_ClientContext, asset_v1.AssetServiceAsyncClient())
 
     async def _get_client(self) -> _AssetClient:
         async with self._client_lock:
             if self._client is None:
-                self._client = self._client_factory()
+                context = self._client_factory()
+                client = await context.__aenter__()
+                self._client_context = context
+                self._client = client
             return self._client
 
     @asynccontextmanager
     async def _use_client(self) -> AsyncIterator[_AssetClient]:
         async with self._condition:
-            if self._closing or self._closed:
+            if self._closing or self._close_failed or self._closed:
                 raise CloudOperationError("closed", "Google Cloud inventory provider is closed.")
             self._active += 1
         try:
@@ -106,7 +128,13 @@ class GCPCloudInventory:
                     pager = await client.search_all_resources(
                         request=request,
                         timeout=self.config.request_timeout_seconds,
-                        retry=AsyncRetry(timeout=self.config.request_timeout_seconds),
+                        retry=AsyncRetry(
+                            predicate=if_transient_error,
+                            initial=1.0,
+                            maximum=60.0,
+                            multiplier=2.0,
+                            timeout=self.config.request_timeout_seconds,
+                        ),
                     )
                     response_page = None
                     async for _response_page in pager.pages:
@@ -164,7 +192,7 @@ class GCPCloudInventory:
             ) from None
 
     async def aclose(self) -> None:
-        """Drain active searches and close the asynchronous Google API client."""
+        """Drain active searches and retry asynchronous SDK cleanup after failure."""
         async with self._condition:
             if self._closed:
                 return
@@ -180,23 +208,29 @@ class GCPCloudInventory:
                 self._condition.notify_all()
                 raise
         try:
-            if self._client is not None:
-                await self._client.close()
+            context = self._client_context
+            if context is not None:
+                await context.__aexit__(None, None, None)
         except asyncio.CancelledError:
             async with self._condition:
                 self._closing = False
+                self._close_failed = True
                 self._condition.notify_all()
             raise
         except Exception:
             async with self._condition:
                 self._closing = False
+                self._close_failed = True
                 self._condition.notify_all()
             raise CloudOperationError(
                 "close-failed", "Google Cloud SDK client could not be closed."
             ) from None
         async with self._condition:
+            self._client_context = None
+            self._client = None
             self._closed = True
             self._closing = False
+            self._close_failed = False
             self._condition.notify_all()
 
 

@@ -4,7 +4,7 @@ Lists Google Cloud resources from a project, folder, or organization with the as
 
 This is the `Cloud Asset Inventory `SearchAllResources` API` adapter for the provider-neutral [`orbit-cloud`](https://github.com/orbit-projects/orbit-cloud) capability. It performs **read-only inventory**. It never provisions, modifies, or deletes cloud resources.
 
-**Status:** pre-alpha. Contract tests use fake SDK clients and need no cloud credentials. No hosted CI, live-provider, production, support, or release-readiness claim is implied.
+**Status:** unpublished v0.1.0-alpha review candidate. Contract tests use fake SDK clients and need no cloud credentials. No hosted CI, live-provider, production, support, or release-readiness claim is implied.
 
 ## Install
 
@@ -22,11 +22,11 @@ provider = GCPCloudInventory()
 try:
     page = await provider.list_resources(
         CloudInventoryQuery(
-        scope="projects/example-project",
-        resource_types=("compute.googleapis.com/Instance",),
-        locations=("us-central1-a",),
-        page_size=100,
-    )
+            scope="projects/example-project",
+            resource_types=("compute.googleapis.com/Instance",),
+            locations=("us-central1-a",),
+            page_size=100,
+        )
     )
     for resource in page.resources:
         print(resource.resource_type, resource.resource_id)
@@ -47,6 +47,10 @@ Resource identifiers and names may be sensitive. Orbit deliberately omits raw pr
 ## SDK choice
 
 `google-cloud-asset` provides an asynchronous GAPIC client. The adapter is network-I/O-bound; no separate Go/Rust runtime or SDK is included without a measured use case.
+
+The adapter uses Protobuf 7, which is also supported by Core's optional
+`process-plugins` extra. This keeps Google Cloud inventory and process-hosted plugins
+installable in the same application environment.
 
 The Python adapter is the baseline implementation. Native language alternatives require contract conformance and representative evidence before they are recommended.
 

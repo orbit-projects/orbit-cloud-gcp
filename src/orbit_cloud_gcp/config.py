@@ -21,7 +21,11 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class GCPCloudInventoryConfig(BaseModel):
-    """Request and concurrency bounds; credentials use Google Application Default Credentials."""
+    """Bounded request settings for Cloud Asset Inventory.
+
+    The adapter uses Google Application Default Credentials. This model intentionally has no
+    credential file, token, or service-account key field.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 

@@ -13,17 +13,25 @@ license-files = ["LICENSE"]
 dependencies = [
   "google-api-core>=2.24,<3",
   "google-cloud-asset>=4.4,<5",
-  "protobuf>=5,<7",
+  # google-cloud-asset 4.3+ supports Protobuf 7, matching Orbit Core's
+  # generated process-plugin protocol without imposing a conflicting cap.
+  "protobuf>=7.35.1,<8",
   "orbit-cloud>=0.2.0a1,<0.3",
 ]
 classifiers = [
-  "Development Status :: 2 - Pre-Alpha",
+  "Development Status :: 3 - Alpha",
   "Programming Language :: Python :: 3",
   "Typing :: Typed",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8,<10", "pytest-asyncio>=0.24,<2", "ruff>=0.8,<1", "mypy>=1.13,<2"]
+dev = [
+  "pytest>=8,<10",
+  "pytest-asyncio>=0.24,<2",
+  "ruff>=0.8,<1",
+  "mypy>=1.13,<2",
+  "types-protobuf>=7.35.1,<8",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/orbit_cloud_gcp"]
@@ -43,3 +51,7 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 python_version = "3.11"
 strict = true
 packages = ["orbit_cloud_gcp"]
+
+[[tool.mypy.overrides]]
+module = ["google.api_core.*", "google.cloud.*"]
+ignore_missing_imports = true
